@@ -1,45 +1,48 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"strings"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
-var fileData []byte
+var home string
+var credentialsPath string
+var uuidsMap = map[string]string{} // uuid → username
 
-// User data maps
-var usernamesMap = map[int]string{
-	1: "Vaibhav",
-	2: "John",
-	3: "Alice",
-	4: "Bob",
-	5: "Charlie",
+func init() {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		panic(err)
+	}
+	home = h
+	credentialsPath = home + "/.csftp/credentials"
 }
 
-var passwordsMap = map[int]string{
-	1: "0000",
-	2: "1234",
-	3: "alicePass",
-	4: "bobSecret",
-	5: "charlie123",
+// Credentials struct
+type Credentials struct {
+	Username string `json:"username"`
+	UUID     string `json:"uuid"`
+	Hash     string `json:"hash"`
 }
 
-// UUID → userID mapping
-var uuidsMap = map[string]int{}
+const credentialsFile = "credentials.json"
 
 func main() {
-	// Load example file
-	data, err := os.ReadFile("lol.txt")
+
+	// Create credentials directory if it doesn't exist
+	err := os.MkdirAll(credentialsPath, 0700)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fileData = data
-	fmt.Println("Loaded file:", len(fileData), "bytes")
+
+	// Load existing UUID → username mapping at startup
+	loadUUIDs()
 
 	// Start TCP server
 	ln, err := net.Listen("tcp", ":8080")
@@ -100,9 +103,7 @@ func handleRequest(reqType string, args []string, conn net.Conn) {
 	}
 }
 
-// ======= HANDLERS =======
-
-// Register a new user or return existing UUID
+// ======= REGISTER =======
 func handleRegister(conn net.Conn, args []string) {
 	if len(args) < 2 {
 		handleError(conn, "Usage: REGISTER username password")
@@ -112,33 +113,42 @@ func handleRegister(conn net.Conn, args []string) {
 	username := args[0]
 	password := args[1]
 
-	// Check if username exists
-	for id, name := range usernamesMap {
-		if name == username {
-			// Username exists → check password
-			if passwordsMap[id] == password {
-				uuid := generateUUID(username, password)
-				uuidsMap[uuid] = id
-				conn.Write([]byte("200 OK\n" + uuid + "\n"))
-			} else {
-				conn.Write([]byte("401 Unauthorized\n"))
-			}
-			return
-		}
+	// Load existing credentials if any
+	creds := loadCredentials()
+
+	// Check if user already exists
+	if user, ok := creds[username]; ok {
+		conn.Write([]byte("200 OK\n" + user.UUID + "\n")) // Return existing UUID
+		uuidsMap[user.UUID] = username                    // Add to session map
+		return
 	}
 
-	// Username does not exist → create new
-	newID := len(usernamesMap) + 1
-	usernamesMap[newID] = username
-	passwordsMap[newID] = password
-
+	// Generate UUID for the new user
 	uuid := generateUUID(username, password)
-	uuidsMap[uuid] = newID
+
+	// Hash the password using bcrypt
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		handleError(conn, "Error hashing password")
+		return
+	}
+
+	// Save new user
+	creds[username] = Credentials{
+		Username: username,
+		UUID:     uuid,
+		Hash:     string(hashedPassword),
+	}
+
+	saveCredentials(creds)
+
+	// Add to UUID → username map
+	uuidsMap[uuid] = username
 
 	conn.Write([]byte("201 Created\n" + uuid + "\n"))
 }
 
-// Authenticate existing user
+// ======= AUTH =======
 func handleAuth(conn net.Conn, args []string) {
 	if len(args) < 2 {
 		handleError(conn, "Usage: AUTH username password")
@@ -148,18 +158,28 @@ func handleAuth(conn net.Conn, args []string) {
 	username := args[0]
 	password := args[1]
 
-	for id, name := range usernamesMap {
-		if name == username && passwordsMap[id] == password {
-			uuid := generateUUID(username, password)
-			uuidsMap[uuid] = id
-			conn.Write([]byte("200 OK\n" + uuid + "\n"))
-			return
-		}
+	creds := loadCredentials()
+
+	user, exists := creds[username]
+	if !exists {
+		conn.Write([]byte("401 Unauthorized\n"))
+		return
 	}
-	conn.Write([]byte("401 Unauthorized\n"))
+
+	// Verify password with bcrypt
+	err := bcrypt.CompareHashAndPassword([]byte(user.Hash), []byte(password))
+	if err != nil {
+		conn.Write([]byte("401 Unauthorized\n"))
+		return
+	}
+
+	// Add to UUID → username map
+	uuidsMap[user.UUID] = username
+
+	conn.Write([]byte("200 OK\n" + user.UUID + "\n"))
 }
 
-// GET file (requires UUID)
+// ======= GET =======
 func handleGet(conn net.Conn, args []string) {
 	if len(args) < 2 {
 		handleError(conn, "Usage: GET UUID filename")
@@ -183,7 +203,7 @@ func handleGet(conn net.Conn, args []string) {
 	conn.Write(data)
 }
 
-// DELETE file (requires UUID)
+// ======= DELETE =======
 func handleDelete(conn net.Conn, args []string) {
 	if len(args) < 2 {
 		handleError(conn, "Usage: DELETE UUID filename")
@@ -203,17 +223,45 @@ func handleDelete(conn net.Conn, args []string) {
 		conn.Write([]byte("404 File not found\n"))
 		return
 	}
+
 	conn.Write([]byte("200 OK\n"))
 }
 
-// Error response
+// ======= ERROR =======
 func handleError(conn net.Conn, msg string) {
 	conn.Write([]byte("400 ERROR\n" + msg + "\n"))
 }
 
 // ======= UTIL =======
+
+// Generate a simple UUID (replace with proper UUID for production)
 func generateUUID(username, password string) string {
-	hasher := sha256.New()
-	hasher.Write([]byte(username + password))
-	return hex.EncodeToString(hasher.Sum(nil))
+	return fmt.Sprintf("%x", username+password)
+}
+
+// Load credentials from JSON file
+func loadCredentials() map[string]Credentials {
+	creds := map[string]Credentials{}
+	path := credentialsPath + "/" + credentialsFile
+	if _, err := os.Stat(path); err == nil {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			json.Unmarshal(data, &creds)
+		}
+	}
+	return creds
+}
+
+// Save credentials to JSON file
+func saveCredentials(creds map[string]Credentials) {
+	data, _ := json.MarshalIndent(creds, "", "  ")
+	os.WriteFile(credentialsPath+"/"+credentialsFile, data, 0600)
+}
+
+// Load UUID → username map from credentials at startup
+func loadUUIDs() {
+	creds := loadCredentials()
+	for _, user := range creds {
+		uuidsMap[user.UUID] = user.Username
+	}
 }
