@@ -1,79 +1,46 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"strings"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
-var home string
-var credentialsPath string
-var uuidsMap = map[string]string{} // uuid → username
-
-func init() {
-	h, err := os.UserHomeDir()
-	if err != nil {
-		panic(err)
-	}
-	home = h
-	credentialsPath = home + "/.csftp/credentials"
-}
-
-// Credentials struct
-type Credentials struct {
-	Username string `json:"username"`
-	UUID     string `json:"uuid"`
-	Hash     string `json:"hash"`
-}
-
-const credentialsFile = "credentials.json"
-
 func main() {
-
-	// Create credentials directory if it doesn't exist
-	err := os.MkdirAll(credentialsPath, 0700)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Load existing UUID → username mapping at startup
-	loadUUIDs()
-
-	// Start TCP server
+	// Start a TCP listener on port 8080.
+	// ln is a listening socket that accepts incoming client connections.
 	ln, err := net.Listen("tcp", ":8080")
 	if err != nil {
-		log.Fatal("listen error:", err)
+		log.Fatal("failed to start listener:", err)
 	}
-	fmt.Println("Server listening on :8080")
+	defer ln.Close()
 
+	log.Println("Server started on :8080")
+
+	// Main server loop: accept and process client connections
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Println("accept error:", err)
+			// Accept errors can occur due to transient network issues.
+			log.Printf("accept failed: %v", err)
 			continue
 		}
+
+		// Each client is handled concurrently so multiple transfers can occur.
 		go handleConnection(conn)
 	}
 }
 
-// Parse incoming request
-func parser(request string) (string, []string) {
-	slice := strings.Fields(request)
-	if len(slice) < 1 {
-		return "ERROR", nil
-	}
-	return slice[0], slice[1:]
-}
-
-// Handle a client connection
+// handleConnection processes a single client connection end-to-end.
+// It reads a request line, parses it into method + argument, and
+// dispatches to the correct handler for the file operation.
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
+	// Read up to 2048 bytes, enough for the request line (e.g. "PUT file.txt")
 	buf := make([]byte, 2048)
 	n, err := conn.Read(buf)
 	if err != nil {
@@ -81,187 +48,104 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 
+	// Extract only the bytes actually read
 	request := string(buf[:n])
 	fmt.Println("Client requested:", request)
-	req, args := parser(request)
-	handleRequest(req, args, conn)
+
+	req, arg := parser(request)
+	handleRequest(req, arg, conn)
 }
 
-// Dispatch requests to proper handler
-func handleRequest(reqType string, args []string, conn net.Conn) {
+// parser splits the client request into a command and an argument.
+// Example input: "PUT hello.txt"
+// Returns: ("PUT", "hello.txt")
+func parser(request string) (string, string) {
+	parts := strings.Fields(request)
+	if len(parts) < 2 {
+		return "ERROR", ""
+	}
+	return parts[0], parts[1]
+}
+
+// handleRequest routes the parsed request to the correct handler.
+func handleRequest(reqType string, arg string, conn net.Conn) {
 	switch reqType {
-	case "REGISTER":
-		handleRegister(conn, args)
-	case "AUTH":
-		handleAuth(conn, args)
+	case "PUT":
+		handlePut(conn, arg)
 	case "GET":
-		handleGet(conn, args)
+		handleGet(conn, arg)
 	case "DELETE":
-		handleDelete(conn, args)
+		handleDelete(conn, arg)
 	default:
 		handleError(conn, "Invalid Request Method")
 	}
 }
 
-// ======= REGISTER =======
-func handleRegister(conn net.Conn, args []string) {
-	if len(args) < 2 {
-		handleError(conn, "Usage: REGISTER username password")
-		return
-	}
-
-	username := args[0]
-	password := args[1]
-
-	// Load existing credentials if any
-	creds := loadCredentials()
-
-	// Check if user already exists
-	if user, ok := creds[username]; ok {
-		conn.Write([]byte("200 OK\n" + user.UUID + "\n")) // Return existing UUID
-		uuidsMap[user.UUID] = username                    // Add to session map
-		return
-	}
-
-	// Generate UUID for the new user
-	uuid := generateUUID(username, password)
-
-	// Hash the password using bcrypt
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+// handlePut receives a file from the client and writes it to disk.
+// Protocol:
+//
+//	Client sends: "PUT filename.ext"
+//	Then immediately streams raw file bytes until EOF or disconnect.
+func handlePut(conn net.Conn, filename string) {
+	// Create the file on the server.
+	file, err := os.Create(filename)
 	if err != nil {
-		handleError(conn, "Error hashing password")
+		handleError(conn, "Failed to create file")
+		return
+	}
+	defer file.Close()
+
+	// Copy all incoming bytes from the connection into the file.
+	// io.Copy reads until the client closes the connection.
+	bytesWritten, err := io.Copy(file, conn)
+	if err != nil {
+		log.Printf("PUT error writing file: %v", err)
+		handleError(conn, "Failed to receive file")
 		return
 	}
 
-	// Save new user
-	creds[username] = Credentials{
-		Username: username,
-		UUID:     uuid,
-		Hash:     string(hashedPassword),
-	}
-
-	saveCredentials(creds)
-
-	// Add to UUID → username map
-	uuidsMap[uuid] = username
-
-	conn.Write([]byte("201 Created\n" + uuid + "\n"))
+	log.Printf("Received file '%s' (%d bytes)", filename, bytesWritten)
 }
 
-// ======= AUTH =======
-func handleAuth(conn net.Conn, args []string) {
-	if len(args) < 2 {
-		handleError(conn, "Usage: AUTH username password")
-		return
-	}
-
-	username := args[0]
-	password := args[1]
-
-	creds := loadCredentials()
-
-	user, exists := creds[username]
-	if !exists {
-		conn.Write([]byte("401 Unauthorized\n"))
-		return
-	}
-
-	// Verify password with bcrypt
-	err := bcrypt.CompareHashAndPassword([]byte(user.Hash), []byte(password))
+// handleGet sends a requested file back to the client.
+// Protocol:
+//
+//	Client sends: "GET filename.ext"
+//	Server sends raw file bytes.
+func handleGet(conn net.Conn, filename string) {
+	file, err := os.Open(filename)
 	if err != nil {
-		conn.Write([]byte("401 Unauthorized\n"))
+		handleError(conn, "File not found")
+		return
+	}
+	defer file.Close()
+
+	// Stream file contents to the client.
+	bytesSent, err := io.Copy(conn, file)
+	if err != nil {
+		log.Printf("GET send error: %v", err)
 		return
 	}
 
-	// Add to UUID → username map
-	uuidsMap[user.UUID] = username
-
-	conn.Write([]byte("200 OK\n" + user.UUID + "\n"))
+	log.Printf("Sent file '%s' (%d bytes)", filename, bytesSent)
 }
 
-// ======= GET =======
-func handleGet(conn net.Conn, args []string) {
-	if len(args) < 2 {
-		handleError(conn, "Usage: GET UUID filename")
-		return
-	}
-
-	uuid := args[0]
-	filename := args[1]
-
-	if _, ok := uuidsMap[uuid]; !ok {
-		conn.Write([]byte("401 Unauthorized\n"))
-		return
-	}
-
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		conn.Write([]byte("404 File not found\n"))
-		return
-	}
-
-	conn.Write(data)
-}
-
-// ======= DELETE =======
-func handleDelete(conn net.Conn, args []string) {
-	if len(args) < 2 {
-		handleError(conn, "Usage: DELETE UUID filename")
-		return
-	}
-
-	uuid := args[0]
-	filename := args[1]
-
-	if _, ok := uuidsMap[uuid]; !ok {
-		conn.Write([]byte("401 Unauthorized\n"))
-		return
-	}
-
+// handleDelete removes a file from the server filesystem.
+// Protocol:
+//
+//	Client sends: "DELETE filename.ext"
+func handleDelete(conn net.Conn, filename string) {
 	err := os.Remove(filename)
 	if err != nil {
-		conn.Write([]byte("404 File not found\n"))
+		handleError(conn, "Failed to delete file (not found)")
 		return
 	}
 
-	conn.Write([]byte("200 OK\n"))
+	fmt.Fprintf(conn, "OK: Deleted %s\n", filename)
+	log.Printf("Deleted file '%s'", filename)
 }
 
-// ======= ERROR =======
+// handleError sends an error message to the client.
 func handleError(conn net.Conn, msg string) {
-	conn.Write([]byte("400 ERROR\n" + msg + "\n"))
-}
-
-// ======= UTIL =======
-
-// Generate a simple UUID (replace with proper UUID for production)
-func generateUUID(username, password string) string {
-	return fmt.Sprintf("%x", username+password)
-}
-
-// Load credentials from JSON file
-func loadCredentials() map[string]Credentials {
-	creds := map[string]Credentials{}
-	path := credentialsPath + "/" + credentialsFile
-	if _, err := os.Stat(path); err == nil {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			json.Unmarshal(data, &creds)
-		}
-	}
-	return creds
-}
-
-// Save credentials to JSON file
-func saveCredentials(creds map[string]Credentials) {
-	data, _ := json.MarshalIndent(creds, "", "  ")
-	os.WriteFile(credentialsPath+"/"+credentialsFile, data, 0600)
-}
-
-// Load UUID → username map from credentials at startup
-func loadUUIDs() {
-	creds := loadCredentials()
-	for _, user := range creds {
-		uuidsMap[user.UUID] = user.Username
-	}
+	fmt.Fprintf(conn, "ERROR: %s\n", msg)
 }
