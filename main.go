@@ -6,13 +6,11 @@ import (
 	"log"
 	"net"
 	"os"
-	"strings"
-	"github.com/shirou/gopsutil/v4/mem"
 	"path/filepath"
+	"strings"
+
 	"github.com/shirou/gopsutil/v4/cpu"
-	"os/exec"
-	"regexp"
-	"strconv"
+	"github.com/shirou/gopsutil/v4/mem"
 )
 
 // main starts the TCP server and listens for incoming connections.
@@ -55,7 +53,6 @@ func handleConnection(conn net.Conn) {
 		log.Println("read error:", err)
 		return
 	}
-     
 
 	// Extract only the bytes actually read
 	request := string(buf[:n])
@@ -103,8 +100,8 @@ func handlePut(conn net.Conn, filename string) {
 		return
 	}
 	defer file.Close()
-	v, _ := mem.VirtualMemory() // See memory usage before receiving
-	 log.Printf("Available Memory: %v MB", v.Available/1024/1024)//log memory usage
+	v, _ := mem.VirtualMemory()                                  // See memory usage before receiving
+	log.Printf("Available Memory: %v MB", v.Available/1024/1024) //log memory usage
 
 	// Copy all incoming bytes from the connection into the file.
 	// io.Copy reads until the client closes the connection.
@@ -115,7 +112,6 @@ func handlePut(conn net.Conn, filename string) {
 		return
 	}
 
-
 	log.Printf("Received file '%s' (%d bytes)", filename, bytesWritten)
 }
 
@@ -125,76 +121,43 @@ func handlePut(conn net.Conn, filename string) {
 //	Client sends: "GET filename.ext"
 //	Server sends raw file bytes.
 func handleGet(conn net.Conn, filename string) {
-    file, err := os.Open(filename)
-    if err != nil {
-        handleError(conn, "File not found")
-        return
-    }
-    defer file.Close()
+	file, err := os.Open(filename)
+	if err != nil {
+		handleError(conn, "File not found")
+		return
+	}
+	defer file.Close()
 
-    // FILE INFO
-    info, _ := file.Stat()
-    filesize := info.Size()
-    fileType := filepath.Ext(filename)
+	// FILE INFO
+	info, _ := file.Stat()
+	filesize := info.Size()
+	fileType := filepath.Ext(filename)
 
-    // MEMORY
-    vm, _ := mem.VirtualMemory()
-    availableMemMB := vm.Available / (1024 * 1024)
+	// MEMORY
+	vm, _ := mem.VirtualMemory()
+	availableMemMB := vm.Available / (1024 * 1024)
 
-    // CPU
-    cpuLoad, _ := cpu.Percent(0, false)
-    cpuPercent := cpuLoad[0]
+	// CPU
+	cpuLoad, _ := cpu.Percent(0, false)
+	cpuPercent := cpuLoad[0]
 
-    // -----------------------------
-    // PING (bandwidth + latency + loss)
-    // -----------------------------
-    cmd := exec.Command("ping", "-c", "4", "-n", "8.8.8.8")
-    pingRaw, _ := cmd.CombinedOutput()
-    pingText := string(pingRaw)
+	// ------------------------------------
+	// PRINT PARAMETERS (your 7 values)
+	// ------------------------------------
+	fmt.Println("=== Pre-Transfer Metrics ===")
+	fmt.Printf("Available_Mem_MB: %.2f\n", float64(availableMemMB))
+	fmt.Printf("Available_CPU_Percent: %.2f\n", cpuPercent)
+	fmt.Printf("File_Size_Bytes: %d\n", filesize)
+	fmt.Printf("File_Type: %s\n", fileType)
 
-    // packet loss
-    lossRe := regexp.MustCompile(`(\d+)% packet loss`)
-    lossMatch := lossRe.FindStringSubmatch(pingText)
-    packetLoss := 0.0
-    if len(lossMatch) == 2 {
-        packetLoss, _ = strconv.ParseFloat(lossMatch[1], 64)
-    }
-
-    // avg latency
-    rttRe := regexp.MustCompile(`= [\d\.]+/([\d\.]+)/`)
-    rttMatch := rttRe.FindStringSubmatch(pingText)
-    latencyMs := 0.0
-    if len(rttMatch) == 2 {
-        latencyMs, _ = strconv.ParseFloat(rttMatch[1], 64)
-    }
-
-    // bandwidth (bytes/time) = speed of ping replies
-    // Extract like: "rtt min/avg/max/mdev = 11.0/11.5/12.2/0.4 ms"
-    // Ping sends 64-byte payloads by default → 64 bytes per packet
-    bandwidthKbps := (64.0 / (latencyMs / 1000.0)) / 1024.0
-
-    // ------------------------------------
-    // PRINT PARAMETERS (your 7 values)
-    // ------------------------------------
-    fmt.Println("=== Pre-Transfer Metrics ===")
-    fmt.Printf("Available_Mem_MB: %.2f\n", float64(availableMemMB))
-    fmt.Printf("Available_CPU_Percent: %.2f\n", cpuPercent)
-    fmt.Printf("File_Size_Bytes: %d\n", filesize)
-    fmt.Printf("File_Type: %s\n", fileType)
-    fmt.Printf("Bandwidth_KBps: %.2f\n", bandwidthKbps)
-    fmt.Printf("Packet_Loss_Percent: %.2f\n", packetLoss)
-    fmt.Printf("Latency_ms: %.2f\n", latencyMs)
-
-    // -----------------------------
-    // TRANSFER
-    // -----------------------------
-    _, err = io.Copy(conn, file)
-    if err != nil {
-        log.Println("Send error:", err)
-    }
+	// -----------------------------
+	// TRANSFER
+	// -----------------------------
+	_, err = io.Copy(conn, file)
+	if err != nil {
+		log.Println("Send error:", err)
+	}
 }
-
-
 
 // handleDelete removes a file from the server filesystem.
 // Protocol:
@@ -206,7 +169,7 @@ func handleDelete(conn net.Conn, filename string) {
 		handleError(conn, "Failed to delete file (not found)")
 		return
 	}
-	
+
 	fmt.Fprintf(conn, "OK: Deleted %s\n", filename)
 	log.Printf("Deleted file '%s'", filename)
 }
@@ -215,5 +178,3 @@ func handleDelete(conn net.Conn, filename string) {
 func handleError(conn net.Conn, msg string) {
 	fmt.Fprintf(conn, "ERROR: %s\n", msg)
 }
-
-
