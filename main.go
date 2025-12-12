@@ -13,7 +13,10 @@ import (
 	"github.com/shirou/gopsutil/v4/mem"
 )
 
-// main starts the TCP server and listens for incoming connections.
+type Response struct {
+	Status  uint8
+	Message []byte
+}
 
 func main() {
 	// Start a TCP listener on port 8080.
@@ -96,8 +99,15 @@ func handlePut(conn net.Conn, filename string) {
 	// Create the file on the server.
 	file, err := os.Create(filename)
 	if err != nil {
-		handleError(conn, "Failed to create file")
+		// Unable to create file
+		response := Response{Status: 63,
+			Message: []byte("Unable to create file"),
+		}
+		buf := []byte{response.Status}
+		buf = append(buf, response.Message...)
+		conn.Write(buf)
 		return
+
 	}
 	defer file.Close()
 	v, _ := mem.VirtualMemory()                                  // See memory usage before receiving
@@ -107,9 +117,17 @@ func handlePut(conn net.Conn, filename string) {
 	// io.Copy reads until the client closes the connection.
 	bytesWritten, err := io.Copy(file, conn)
 	if err != nil {
-		log.Printf("PUT error writing file: %v", err)
-		handleError(conn, "Failed to receive file")
+		//error during file transfer
+		response := Response{Status: 62, Message: []byte("PUT error")}
+		buf := []byte{response.Status}
+		buf = append(buf, response.Message...)
+		conn.Write(buf)
 		return
+	} else { // Successfully sent
+		response := Response{Status: 69, Message: []byte("OK")}
+		buf := []byte{response.Status}
+		buf = append(buf, response.Message...)
+		conn.Write(buf)
 	}
 
 	log.Printf("Received file '%s' (%d bytes)", filename, bytesWritten)
@@ -122,8 +140,14 @@ func handlePut(conn net.Conn, filename string) {
 //	Server sends raw file bytes.
 func handleGet(conn net.Conn, filename string) {
 	file, err := os.Open(filename)
-	if err != nil {
-		handleError(conn, "File not found")
+	if err != nil { // File not found
+		response := Response{
+			Status:  64,
+			Message: []byte("file not found"),
+		}
+		buf := []byte{response.Status}
+		buf = append(buf, response.Message...)
+		conn.Write(buf)
 		return
 	}
 	defer file.Close()
@@ -142,7 +166,7 @@ func handleGet(conn net.Conn, filename string) {
 	cpuPercent := cpuLoad[0]
 
 	// ------------------------------------
-	// PRINT PARAMETERS (your 7 values)
+	// PRINT PARAMETERS (just print, do not send)
 	// ------------------------------------
 	fmt.Println("=== Pre-Transfer Metrics ===")
 	fmt.Printf("Available_Mem_MB: %.2f\n", float64(availableMemMB))
@@ -153,10 +177,24 @@ func handleGet(conn net.Conn, filename string) {
 	// -----------------------------
 	// TRANSFER
 	// -----------------------------
-	_, err = io.Copy(conn, file)
+	bytesSent, err := io.Copy(conn, file)
 	if err != nil {
+		// Error during file transfer
+		response := Response{Status: 63, Message: []byte("GET error")}
+		buf := []byte{response.Status}
+		buf = append(buf, response.Message...)
+		conn.Write(buf)
 		log.Println("Send error:", err)
+		return
 	}
+
+	// Successfully sent
+	response := Response{Status: 69, Message: []byte("OK")}
+	buf := []byte{response.Status}
+	buf = append(buf, response.Message...)
+	conn.Write(buf)
+
+	log.Printf("Sent file '%s' (%d bytes)", filename, bytesSent)
 }
 
 // handleDelete removes a file from the server filesystem.
@@ -166,15 +204,34 @@ func handleGet(conn net.Conn, filename string) {
 func handleDelete(conn net.Conn, filename string) {
 	err := os.Remove(filename)
 	if err != nil {
-		handleError(conn, "Failed to delete file (not found)")
+		// File not found or unable to delete
+		response := Response{Status: 64,
+			Message: []byte("file not found"),
+		}
+		buf := []byte{response.Status}
+		buf = append(buf, response.Message...)
+		conn.Write(buf)
 		return
+	} else {
+		// Successfully deleted
+		response := Response{Status: 69,
+			Message: []byte("OK"),
+		}
+		buf := []byte{response.Status}
+		buf = append(buf, response.Message...)
+		conn.Write(buf)
 	}
 
-	fmt.Fprintf(conn, "OK: Deleted %s\n", filename)
 	log.Printf("Deleted file '%s'", filename)
 }
 
 // handleError sends an error message to the client.
 func handleError(conn net.Conn, msg string) {
-	fmt.Fprintf(conn, "ERROR: %s\n", msg)
+	cmderror := msg + "Invalid Request Method"
+	response := Response{Status: 65,
+		Message: []byte(cmderror),
+	}
+	buf := []byte{response.Status}
+	buf = append(buf, response.Message...)
+	conn.Write(buf)
 }
