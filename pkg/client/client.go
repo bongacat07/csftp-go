@@ -29,7 +29,6 @@ func StartClient() {
 	for scanner.Scan() {
 		line := scanner.Text()
 		method, arg := clientParser(line)
-		fmt.Printf("method = %s arg = %s\n", method, arg)
 		handleMethod(method, arg, conn)
 	}
 }
@@ -48,7 +47,7 @@ func handleMethod(method string, args string, conn net.Conn) {
 	case "DELETE":
 		reqDelete(args, conn)
 	case "PUT":
-
+		reqPut(args, conn)
 	case "GET":
 		reqGet(args, conn)
 
@@ -85,13 +84,40 @@ func reqGet(args string, conn net.Conn) {
 	if err != nil {
 		panic(err)
 	}
-	filename := args + "clientside.txt"
-	file, err := os.Create(args + "clientside.txt")
+
+	file, err := os.Create(args)
 	if err != nil {
 		// Unable to create file
 
 	}
 	defer file.Close()
 	bytesWritten, err := io.Copy(file, conn)
-	log.Printf("Received file '%s' (%d bytes)", filename, bytesWritten)
+	log.Printf("Received file '%s' (%d bytes)", args, bytesWritten)
+
+}
+
+func reqPut(args string, conn net.Conn) {
+
+	req := "PUT " + args
+	_, err := conn.Write([]byte(req))
+	if err != nil {
+		panic(err)
+	}
+	file, err := os.Open(args)
+	if err != nil { // File not found
+		//
+	}
+	defer file.Close()
+
+	// Stream file contents to the server
+	// Indicate success with status 0
+	bytesSent, err := io.Copy(conn, file)
+	if err != nil {
+		// Error during file transfer
+
+	} else { // Successfully sent
+		//
+	}
+
+	log.Printf("Sent file '%s' (%d bytes)", args, bytesSent)
 }
