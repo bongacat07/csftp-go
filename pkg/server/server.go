@@ -1,4 +1,4 @@
-package cmd
+package server
 
 import (
 	"fmt"
@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 )
 
 type Response struct {
@@ -19,11 +20,11 @@ func StartServer() {
 	// ln is a listening socket that accepts incoming client connections.
 	ln, err := net.Listen("tcp", ":8080")
 	if err != nil {
-		log.Fatal("failed to start listener:", err)
+		log.Fatal("failed to start server:", err)
 	}
 	defer ln.Close()
 
-	log.Println("Server started on :8080")
+	log.Println("CSFTP Server started on :8080")
 
 	// Main server loop: accept and process client connections
 	for {
@@ -43,22 +44,30 @@ func StartServer() {
 // It reads a request line, parses it into method + argument, and
 // dispatches to the correct handler for the file operation.
 func handleConnection(conn net.Conn) {
-	defer conn.Close()
+	defer conn.Close() // Keep this, but close AFTER the loop
 
-	// Read up to 2048 bytes, enough for the request line (e.g. "PUT file.txt")
-	buf := make([]byte, 2048)
-	n, err := conn.Read(buf)
-	if err != nil {
-		log.Println("read error:", err)
-		return
+	// Keep reading requests on same connection
+	for {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		buf := make([]byte, 2048)
+		n, err := conn.Read(buf)
+		if err != nil {
+			// Connection closed or error - exit loop
+			if err != io.EOF {
+				log.Println("read error:", err)
+			}
+			return
+		}
+
+		request := string(buf[:n])
+		fmt.Println("Client requested:", request)
+
+		req, arg := parser(request)
+		handleRequest(req, arg, conn)
+
+		// TODO: Check if client sent close signal
+		// if req.wantsClose { break }
 	}
-
-	// Extract only the bytes actually read
-	request := string(buf[:n])
-	fmt.Println("Client requested:", request)
-
-	req, arg := parser(request)
-	handleRequest(req, arg, conn)
 }
 
 // parser splits the client request into a command and an argument.
