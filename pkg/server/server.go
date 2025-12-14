@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -115,10 +116,15 @@ func handlePut(conn net.Conn, filename string) {
 
 	}
 	defer file.Close()
-
+	buf := make([]byte, 8)
+	_, errr := io.ReadFull(conn, buf)
+	if errr != nil {
+		//
+	}
+	n := binary.BigEndian.Uint64(buf)
 	// Copy all incoming bytes from the connection into the file.
 	// io.Copy reads until the client closes the connection.
-	bytesWritten, err := io.Copy(file, conn)
+	bytesWritten, err := io.CopyN(file, conn, int64(n))
 	if err != nil {
 		//error during file transfer
 		response := Response{Status: 62, Message: []byte("PUT error")}
@@ -143,10 +149,13 @@ func handlePut(conn net.Conn, filename string) {
 //	Server sends raw file bytes.
 func handleGet(conn net.Conn, filename string) {
 	file, err := os.Open(filename)
-	if err != nil { // File not found
-		response := Response{Status: 64,
+	if err != nil {
+		// File not found
+		response := Response{
+			Status:  64,
 			Message: []byte("file not found"),
 		}
+
 		buf := []byte{response.Status}
 		buf = append(buf, response.Message...)
 		conn.Write(buf)
@@ -154,9 +163,21 @@ func handleGet(conn net.Conn, filename string) {
 	}
 	defer file.Close()
 
-	// Stream file contents to the client.
-	// Indicate success with status 0
+	// Get file info
+	fi, err := file.Stat()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// File size in bytes
+	fileSize := fi.Size()
+	fmt.Println("File size:", fileSize)
+	buf := make([]byte, 8) // 8 bytes for uint64
+	binary.BigEndian.PutUint64(buf, uint64(fileSize))
+	conn.Write(buf)
+
 	bytesSent, err := io.Copy(conn, file)
+
 	if err != nil {
 		// Error during file transfer
 		response := Response{Status: 63, Message: []byte("GET error")}
