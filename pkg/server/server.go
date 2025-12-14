@@ -193,7 +193,7 @@ func handleGet(conn net.Conn, filename string) {
 
 	if err != nil {
 		// Error during file transfer
-		response := Response{Status: 67, Message: []byte("GET error")}
+		response := Response{Status: 70, Message: []byte("GET error")}
 		buf := []byte{response.Status}
 		buf = append(buf, response.Message...)
 		conn.Write(buf)
