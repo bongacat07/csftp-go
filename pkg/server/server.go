@@ -106,7 +106,7 @@ func handlePut(conn net.Conn, filename string) {
 	file, err := os.Create(filename)
 	if err != nil {
 		// Unable to create file
-		response := Response{Status: 63,
+		response := Response{Status: 62,
 			Message: []byte("Unable to create file"),
 		}
 		buf := []byte{response.Status}
@@ -119,7 +119,12 @@ func handlePut(conn net.Conn, filename string) {
 	buf := make([]byte, 8)
 	_, errr := io.ReadFull(conn, buf)
 	if errr != nil {
-		//
+		response := Response{Status: 63,
+			Message: []byte("Buffer error"),
+		}
+		buf := []byte{response.Status}
+		buf = append(buf, response.Message...)
+		conn.Write(buf)
 	}
 	n := binary.BigEndian.Uint64(buf)
 	// Copy all incoming bytes from the connection into the file.
@@ -127,7 +132,7 @@ func handlePut(conn net.Conn, filename string) {
 	bytesWritten, err := io.CopyN(file, conn, int64(n))
 	if err != nil {
 		//error during file transfer
-		response := Response{Status: 62, Message: []byte("PUT error")}
+		response := Response{Status: 64, Message: []byte("PUT error")}
 		buf := []byte{response.Status}
 		buf = append(buf, response.Message...)
 		conn.Write(buf)
@@ -152,7 +157,7 @@ func handleGet(conn net.Conn, filename string) {
 	if err != nil {
 		// File not found
 		response := Response{
-			Status:  64,
+			Status:  65,
 			Message: []byte("file not found"),
 		}
 
@@ -166,7 +171,15 @@ func handleGet(conn net.Conn, filename string) {
 	// Get file info
 	fi, err := file.Stat()
 	if err != nil {
-		log.Fatal(err)
+		response := Response{
+			Status:  66,
+			Message: []byte("FIle info error"),
+		}
+
+		buf := []byte{response.Status}
+		buf = append(buf, response.Message...)
+		conn.Write(buf)
+		return
 	}
 
 	// File size in bytes
@@ -180,7 +193,7 @@ func handleGet(conn net.Conn, filename string) {
 
 	if err != nil {
 		// Error during file transfer
-		response := Response{Status: 63, Message: []byte("GET error")}
+		response := Response{Status: 67, Message: []byte("GET error")}
 		buf := []byte{response.Status}
 		buf = append(buf, response.Message...)
 		conn.Write(buf)
@@ -203,7 +216,7 @@ func handleDelete(conn net.Conn, filename string) {
 	err := os.Remove(filename)
 	if err != nil {
 		// File not found or unable to delete
-		response := Response{Status: 64,
+		response := Response{Status: 65,
 			Message: []byte("file not found"),
 		}
 		buf := []byte{response.Status}
@@ -226,7 +239,7 @@ func handleDelete(conn net.Conn, filename string) {
 // handleError sends an error message to the client.
 func handleError(conn net.Conn, msg string) {
 	cmderror := msg + "Invalid Request Method"
-	response := Response{Status: 65,
+	response := Response{Status: 68,
 		Message: []byte(cmderror),
 	}
 	buf := []byte{response.Status}
