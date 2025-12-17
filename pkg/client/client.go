@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 )
 
 type Response struct {
@@ -86,37 +87,44 @@ func reqGet(args string, conn net.Conn) {
 		panic(err)
 	}
 
-	file, err := os.Create(args)
-	if err != nil {
-		// Unable to create file
-
-	}
-	defer file.Close()
+	// Read the file size (8 bytes)
 	buf := make([]byte, 8)
-	_, errr := io.ReadFull(conn, buf)
-	if errr != nil {
-		response := Response{Status: 63,
-			Message: []byte("Buffer error"),
-		}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
-		conn.Write(buf)
+	_, err = io.ReadFull(conn, buf)
+	if err != nil {
+		log.Printf("Error reading file size: %v", err)
+		return
 	}
-	n := binary.BigEndian.Uint64(buf)
-	bytesWritten, err := io.CopyN(file, conn, int64(n))
-	log.Printf("Received file '%s' (%d bytes)", args, bytesWritten)
-	buff := make([]byte, 1024) // buffer size can be adjusted
+	fileSize := binary.BigEndian.Uint64(buf)
+
+	// Allocate buffer to receive file data
+	dataBuffer := make([]byte, fileSize)
+
+	// Measure ONLY network transfer time
+	start := time.Now()
+	_, err = io.ReadFull(conn, dataBuffer)
+	networkTime := time.Since(start)
+	if err != nil {
+		log.Printf("Error reading file data: %v", err)
+		return
+	}
+
+	log.Printf("Received file '%s' (%d bytes) in %v", args, fileSize, networkTime)
+	log.Printf("Network transfer time: %v", networkTime)
+
+	// Read server response
+	buff := make([]byte, 1024)
 	resp, err := conn.Read(buff)
 	if err != nil {
 		panic(err)
 	}
 
-	// Convert received bytes into Response struct
 	response := Response{
 		Status:  buff[0],
 		Message: buff[1:resp],
 	}
 	fmt.Printf("Server response: %d - %s\n", response.Status, string(response.Message))
+
+	// TODO: Log networkTime to CSV file with transfer_id
 }
 
 func reqPut(args string, conn net.Conn) {

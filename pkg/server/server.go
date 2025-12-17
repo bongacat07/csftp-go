@@ -1,14 +1,20 @@
 package server
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/mem"
 )
 
 type Response struct {
@@ -153,59 +159,79 @@ func handlePut(conn net.Conn, filename string) {
 //	Client sends: "GET filename.ext"
 //	Server sends raw file bytes.
 func handleGet(conn net.Conn, filename string) {
-	file, err := os.Open(filename)
+	// 1. Read entire file into memory
+	fileData, err := os.ReadFile(filename)
 	if err != nil {
-		// File not found
-		response := Response{
-			Status:  65,
-			Message: []byte("file not found"),
-		}
-
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
-		conn.Write(buf)
-		return
-	}
-	defer file.Close()
-
-	// Get file info
-	fi, err := file.Stat()
-	if err != nil {
-		response := Response{
-			Status:  66,
-			Message: []byte("FIle info error"),
-		}
-
+		response := Response{Status: 65, Message: []byte("file not found")}
 		buf := []byte{response.Status}
 		buf = append(buf, response.Message...)
 		conn.Write(buf)
 		return
 	}
 
-	// File size in bytes
-	fileSize := fi.Size()
-	fmt.Println("File size:", fileSize)
-	buf := make([]byte, 8) // 8 bytes for uint64
-	binary.BigEndian.PutUint64(buf, uint64(fileSize))
+	// 2. Collect metrics BEFORE compression
+	fileSize := len(fileData)
+	fileType := filepath.Ext(filename)
+
+	// CPU (use 1 second sample for accuracy)
+	cpuLoad, _ := cpu.Percent(time.Second, false)
+	cpuPercent := cpuLoad[0]
+
+	// Memory
+	vm, _ := mem.VirtualMemory()
+	availableMemMB := vm.Available / (1024 * 1024)
+
+	fmt.Println("=== Pre-Compression Metrics ===")
+	fmt.Printf("File_Size_Bytes: %d\n", fileSize)
+	fmt.Printf("File_Type: %s\n", fileType)
+	fmt.Printf("CPU_Percent: %.2f\n", cpuPercent)
+	fmt.Printf("Available_Mem_MB: %d\n", availableMemMB)
+
+	// 3. Compress the file
+	var compressedBuffer bytes.Buffer
+
+	start := time.Now()
+	gzipWriter := gzip.NewWriter(&compressedBuffer)
+	_, err = gzipWriter.Write(fileData)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		log.Fatal(err)
+	}
+	compressionTime := time.Since(start)
+
+	compressedData := compressedBuffer.Bytes()
+	compressedSize := len(compressedData)
+
+	fmt.Printf("Compression_Time: %v\n", compressionTime)
+	fmt.Printf("Compressed_Size: %d\n", compressedSize)
+
+	// 4. Send size header (8 bytes)
+	sizeBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(sizeBuf, uint64(compressedSize))
+	conn.Write(sizeBuf)
+
+	// 5. Send compressed data
+	_, err = conn.Write(compressedData)
+	if err != nil {
+		response := Response{Status: 70, Message: []byte("Transfer error")}
+		buf := []byte{response.Status}
+		buf = append(buf, response.Message...)
+		conn.Write(buf)
+		return
+	}
+
+	// 6. Send success response
+	response := Response{Status: 69, Message: []byte("OK")}
+	buf := []byte{response.Status}
+	buf = append(buf, response.Message...)
 	conn.Write(buf)
 
-	bytesSent, err := io.Copy(conn, file)
+	log.Printf("Sent file '%s' (original: %d, compressed: %d, time: %v)",
+		filename, fileSize, compressedSize, compressionTime)
 
-	if err != nil {
-		// Error during file transfer
-		response := Response{Status: 70, Message: []byte("GET error")}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
-		conn.Write(buf)
-		return
-	} else { // Successfully sent
-		response := Response{Status: 69, Message: []byte("OK")}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
-		conn.Write(buf)
-	}
-
-	log.Printf("Sent file '%s' (%d bytes)", filename, bytesSent)
+	// TODO: Log to CSV here
 }
 
 // handleDelete removes a file from the server filesystem.
