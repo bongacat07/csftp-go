@@ -1,4 +1,4 @@
-module ftp.com/m
+module csftp
 
 go 1.24.9
 

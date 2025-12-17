@@ -1,94 +1,36 @@
 package main
 
 import (
-	"fmt"
-	"io"
-	"log"
-	"net"
 	"os"
+<<<<<<< HEAD
 	"path/filepath"
 	"strings"
 
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/mem"
+=======
+
+	"csftp/pkg/client"
+	"csftp/pkg/server"
+>>>>>>> main
 )
 
-type Response struct {
-	Status  uint8
-	Message []byte
-}
-
 func main() {
-	// Start a TCP listener on port 8080.
-	// ln is a listening socket that accepts incoming client connections.
-	ln, err := net.Listen("tcp", ":8080")
-	if err != nil {
-		log.Fatal("failed to start listener:", err)
-	}
-	defer ln.Close()
-
-	log.Println("Server started on :8080")
-
-	// Main server loop: accept and process client connections
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			// Accept errors can occur due to transient network issues.
-			log.Printf("accept failed: %v", err)
-			continue
-		}
-
-		// Each client is handled concurrently so multiple transfers can occur.
-		go handleConnection(conn)
-	}
-}
-
-// handleConnection processes a single client connection end-to-end.
-// It reads a request line, parses it into method + argument, and
-// dispatches to the correct handler for the file operation.
-func handleConnection(conn net.Conn) {
-	defer conn.Close()
-
-	// Read up to 2048 bytes, enough for the request line (e.g. "PUT file.txt")
-	buf := make([]byte, 2048)
-	n, err := conn.Read(buf)
-	if err != nil {
-		log.Println("read error:", err)
+	if len(os.Args) < 2 {
+		println("usage: csftp [server|client]")
 		return
 	}
 
-	// Extract only the bytes actually read
-	request := string(buf[:n])
-	fmt.Println("Client requested:", request)
-
-	req, arg := parser(request)
-	handleRequest(req, arg, conn)
-}
-
-// parser splits the client request into a command and an argument.
-// Example input: "PUT hello.txt"
-// Returns: ("PUT", "hello.txt")
-func parser(request string) (string, string) {
-	parts := strings.Fields(request)
-	if len(parts) < 2 {
-		return "ERROR", ""
-	}
-	return parts[0], parts[1]
-}
-
-// handleRequest routes the parsed request to the correct handler.
-func handleRequest(reqType string, arg string, conn net.Conn) {
-	switch reqType {
-	case "PUT":
-		handlePut(conn, arg)
-	case "GET":
-		handleGet(conn, arg)
-	case "DELETE":
-		handleDelete(conn, arg)
+	switch os.Args[1] {
+	case "server":
+		server.StartServer()
+	case "client":
+		client.StartClient()
 	default:
-		handleError(conn, "Invalid Request Method")
+		println("unknown command")
 	}
 }
+<<<<<<< HEAD
 
 // handlePut receives a file from the client and writes it to disk.
 // Protocol:
@@ -235,3 +177,5 @@ func handleError(conn net.Conn, msg string) {
 	buf = append(buf, response.Message...)
 	conn.Write(buf)
 }
+=======
+>>>>>>> main
