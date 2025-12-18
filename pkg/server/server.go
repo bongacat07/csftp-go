@@ -191,7 +191,7 @@ func handleGet(conn net.Conn, filename string) {
 	var compressedBuffer bytes.Buffer
 
 	start := time.Now()
-	gzipWriter := gzip.NewWriter(&compressedBuffer)
+	gzipWriter, _ := gzip.NewWriterLevel(&compressedBuffer, 3)
 	_, err = gzipWriter.Write(fileData)
 	if err != nil {
 		log.Fatal(err)
