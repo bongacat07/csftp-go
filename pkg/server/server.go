@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -45,41 +44,57 @@ func StartServer() {
 // It reads a request line, parses it into method + argument, and
 // dispatches to the correct handler for the file operation.
 func handleConnection(conn net.Conn) {
-	defer conn.Close() // Keep this, but close AFTER the loop
+	defer conn.Close()
 
-	// Keep reading requests on same connection
 	for {
+		// 60 second timeout between requests
 		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		buf := make([]byte, 2048)
-		n, err := conn.Read(buf)
+
+		req, arg, err := parser(conn)
 		if err != nil {
-			// Connection closed or error - exit loop
 			if err != io.EOF {
-				log.Println("read error:", err)
+				log.Println("parse error:", err)
 			}
 			return
 		}
 
-		request := string(buf[:n])
-		fmt.Println("Client requested:", request)
-
-		req, arg := parser(request)
 		handleRequest(req, arg, conn)
-
-		// TODO: Check if client sent close signal
-		// if req.wantsClose { break }
 	}
 }
 
-// parser splits the client request into a command and an argument.
-// Example input: "PUT hello.txt"
-// Returns: ("PUT", "hello.txt")
-func parser(request string) (string, string) {
-	parts := strings.Fields(request)
-	if len(parts) < 2 {
-		return "ERROR", ""
+func parser(r io.Reader) (string, string, error) {
+	// Read length
+	lenBuf := make([]byte, 2)
+	if _, err := io.ReadFull(r, lenBuf); err != nil {
+		return "", "", err
 	}
-	return parts[0], parts[1]
+	filenameLength := binary.BigEndian.Uint16(lenBuf)
+
+	// Read opcode
+	opBuf := make([]byte, 1)
+	if _, err := io.ReadFull(r, opBuf); err != nil {
+		return "", "", err
+	}
+
+	var reqMethod string
+	switch opBuf[0] {
+	case 0x01:
+		reqMethod = "GET"
+	case 0x02:
+		reqMethod = "PUT"
+	case 0x03:
+		reqMethod = "DELETE"
+	default:
+		return "", "", fmt.Errorf("invalid opcode: %d", opBuf[0])
+	}
+
+	// Read filename
+	nameBuf := make([]byte, filenameLength)
+	if _, err := io.ReadFull(r, nameBuf); err != nil {
+		return "", "", err
+	}
+
+	return reqMethod, string(nameBuf), nil
 }
 
 // handleRequest routes the parsed request to the correct handler.
