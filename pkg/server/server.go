@@ -21,6 +21,17 @@ type Response struct {
 	Status  uint8
 	Message []byte
 }
+type state int
+
+const (
+	stateSendL1 state = iota
+	stateWaitACK1
+	stateSendL2
+	stateWaitACK2
+	stateSendL3
+	stateWaitACK3
+	stateSendResponse
+)
 
 func StartServer() {
 	// Start a TCP listener on port 8080.
@@ -159,77 +170,43 @@ func handlePut(conn net.Conn, filename string) {
 //	Client sends: "GET filename.ext"
 //	Server sends raw file bytes.
 func handleGet(conn net.Conn, filename string) {
-	// 1. Read entire file into memory
-	fileData, err := os.ReadFile(filename)
-	if err != nil {
-		response := Response{Status: 65, Message: []byte("file not found")}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
-		conn.Write(buf)
-		return
+	curState := stateSendL1
+
+name:
+	for {
+		switch curState {
+		case stateSendL1:
+			headerSize1, compressedData1 := compressor(1, filename)
+			writeToConn(headerSize1, conn, compressedData1)
+			curState = stateWaitACK1
+		case stateSendL2:
+			headerSize2, compressedData2 := compressor(3, filename)
+			writeToConn(headerSize2, conn, compressedData2)
+			curState = stateWaitACK2
+		case stateSendL3:
+			headerSize3, compressedData3 := compressor(9, filename)
+			writeToConn(headerSize3, conn, compressedData3)
+			curState = stateWaitACK3
+
+		case stateWaitACK1:
+			if readACK(conn) {
+				curState = stateSendL2
+			}
+
+		case stateWaitACK2:
+			if readACK(conn) {
+				curState = stateSendL3
+			}
+		case stateWaitACK3:
+			if readACK(conn) {
+				curState = stateSendResponse
+			}
+		case stateSendResponse:
+			sendRespone(conn)
+			break name
+		}
+
 	}
-
-	// 2. Collect metrics BEFORE compression
-	fileSize := len(fileData)
-	fileType := filepath.Ext(filename)
-
-	// CPU (use 1 second sample for accuracy)
-	cpuLoad, _ := cpu.Percent(time.Second, false)
-	cpuPercent := cpuLoad[0]
-
-	// Memory
-	vm, _ := mem.VirtualMemory()
-	availableMemMB := vm.Available / (1024 * 1024)
-
-	fmt.Println("=== Pre-Compression Metrics ===")
-	fmt.Printf("File_Size_Bytes: %d\n", fileSize)
-	fmt.Printf("File_Type: %s\n", fileType)
-	fmt.Printf("CPU_Percent: %.2f\n", cpuPercent)
-	fmt.Printf("Available_Mem_MB: %d\n", availableMemMB)
-
-	// 3. Compress the file
-	var compressedBuffer bytes.Buffer
-
-	start := time.Now()
-	gzipWriter, _ := gzip.NewWriterLevel(&compressedBuffer, 3)
-	_, err = gzipWriter.Write(fileData)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if err := gzipWriter.Close(); err != nil {
-		log.Fatal(err)
-	}
-	compressionTime := time.Since(start)
-
-	compressedData := compressedBuffer.Bytes()
-	compressedSize := len(compressedData)
-
-	fmt.Printf("Compression_Time: %v\n", compressionTime)
-	fmt.Printf("Compressed_Size: %d\n", compressedSize)
-
-	// 4. Send size header (8 bytes)
-	sizeBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(sizeBuf, uint64(compressedSize))
-	conn.Write(sizeBuf)
-
-	// 5. Send compressed data
-	_, err = conn.Write(compressedData)
-	if err != nil {
-		response := Response{Status: 70, Message: []byte("Transfer error")}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
-		conn.Write(buf)
-		return
-	}
-
-	// 6. Send success response
-	response := Response{Status: 69, Message: []byte("OK")}
-	buf := []byte{response.Status}
-	buf = append(buf, response.Message...)
-	conn.Write(buf)
-
-	log.Printf("Sent file '%s' (original: %d, compressed: %d, time: %v)",
-		filename, fileSize, compressedSize, compressionTime)
 
 	// TODO: Log to CSV here
 }
@@ -271,4 +248,90 @@ func handleError(conn net.Conn, msg string) {
 	buf := []byte{response.Status}
 	buf = append(buf, response.Message...)
 	conn.Write(buf)
+}
+
+func compressor(level int, filename string) ([]byte, []byte) {
+	fileData, err := os.ReadFile(filename)
+	fileSize := len(fileData)
+	fileType := filepath.Ext(filename)
+
+	// CPU (use 1 second sample for accuracy)
+	cpuLoad, _ := cpu.Percent(time.Second, false)
+	cpuPercent := cpuLoad[0]
+
+	// Memory
+	vm, _ := mem.VirtualMemory()
+	availableMemMB := vm.Available / (1024 * 1024)
+
+	fmt.Println("=== Pre-Compression Metrics ===")
+	fmt.Printf("File_Size_Bytes: %d\n", fileSize)
+	fmt.Printf("File_Type: %s\n", fileType)
+	fmt.Printf("CPU_Percent: %.2f\n", cpuPercent)
+	fmt.Printf("Available_Mem_MB: %d\n", availableMemMB)
+
+	var compressedBuffer bytes.Buffer
+	start := time.Now()
+	gzipWriter, _ := gzip.NewWriterLevel(&compressedBuffer, level)
+	_, err = gzipWriter.Write(fileData)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		log.Fatal(err)
+	}
+	compressionTime := time.Since(start)
+
+	compressedData := compressedBuffer.Bytes()
+	compressedSize := len(compressedData)
+
+	fmt.Printf("Compression_Time: %v\n", compressionTime)
+	fmt.Printf("Compressed_Size: %d\n", compressedSize)
+	headerSize := makeHeader(compressedSize)
+
+	return headerSize, compressedData
+
+}
+func makeHeader(sizeaftc int) []byte {
+	sizeBuf := make([]byte, 8)
+	binary.BigEndian.PutUint64(sizeBuf, uint64(sizeaftc))
+	return sizeBuf
+}
+
+func writeToConn(buf []byte, conn net.Conn, compData []byte) {
+	if _, err := conn.Write(buf); err != nil {
+		return
+	}
+
+	if _, err := conn.Write(compData); err != nil {
+		response := Response{
+			Status:  70,
+			Message: []byte("Transfer error"),
+		}
+
+		respBuf := []byte{response.Status}
+		respBuf = append(respBuf, response.Message...)
+		conn.Write(respBuf)
+		return
+	}
+}
+func sendRespone(conn net.Conn) {
+	response := Response{Status: 69, Message: []byte("OK")}
+	buf := []byte{response.Status}
+	buf = append(buf, response.Message...)
+	conn.Write(buf)
+	log.Println("Success")
+}
+func readACK(conn net.Conn) bool {
+	buf := make([]byte, 2)
+	_, err := io.ReadFull(conn, buf)
+
+	if err != nil {
+		panic(err)
+	}
+
+	if buf[0] == 7 {
+		return true
+	} else {
+		return false
+	}
 }
