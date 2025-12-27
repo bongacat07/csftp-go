@@ -121,41 +121,60 @@ func handlePut(conn net.Conn, filename string) {
 	file, err := os.Create(filename)
 	if err != nil {
 		// Unable to create file
-		response := Response{Status: 62,
-			Message: []byte("Unable to create file"),
-		}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		message := []byte("Unable to create file")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 62
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 		return
-
 	}
 	defer file.Close()
+
 	buf := make([]byte, 8)
 	_, errr := io.ReadFull(conn, buf)
 	if errr != nil {
-		response := Response{Status: 63,
-			Message: []byte("Buffer error"),
-		}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		message := []byte("Buffer error")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 63
+		copy(buf[3:], message)
+
 		conn.Write(buf)
+		return
 	}
+
 	n := binary.BigEndian.Uint64(buf)
 	// Copy all incoming bytes from the connection into the file.
 	// io.Copy reads until the client closes the connection.
 	bytesWritten, err := io.CopyN(file, conn, int64(n))
 	if err != nil {
 		//error during file transfer
-		response := Response{Status: 64, Message: []byte("PUT error")}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		message := []byte("PUT error")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 64
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 		return
-	} else { // Successfully sent
-		response := Response{Status: 69, Message: []byte("OK")}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+	} else {
+		// Successfully sent
+		message := []byte("OK")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 69
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 	}
 
@@ -171,13 +190,14 @@ func handleGet(conn net.Conn, filename string) {
 	file, err := os.Open(filename)
 	if err != nil {
 		// File not found
-		response := Response{
-			Status:  65,
-			Message: []byte("file not found"),
-		}
+		message := []byte("file not found")
+		responseSize := uint16(1 + len(message))
 
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 65
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 		return
 	}
@@ -186,13 +206,14 @@ func handleGet(conn net.Conn, filename string) {
 	// Get file info
 	fi, err := file.Stat()
 	if err != nil {
-		response := Response{
-			Status:  66,
-			Message: []byte("FIle info error"),
-		}
+		message := []byte("File info error")
+		responseSize := uint16(1 + len(message))
 
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 66
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 		return
 	}
@@ -208,15 +229,26 @@ func handleGet(conn net.Conn, filename string) {
 
 	if err != nil {
 		// Error during file transfer
-		response := Response{Status: 70, Message: []byte("GET error")}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		message := []byte("GET error")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 70
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 		return
-	} else { // Successfully sent
-		response := Response{Status: 69, Message: []byte("OK")}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+	} else {
+		// Successfully sent
+		message := []byte("OK")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 69
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 	}
 
@@ -231,20 +263,26 @@ func handleDelete(conn net.Conn, filename string) {
 	err := os.Remove(filename)
 	if err != nil {
 		// File not found or unable to delete
-		response := Response{Status: 65,
-			Message: []byte("file not found"),
-		}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		message := []byte("file not found")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 65
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 		return
 	} else {
 		// Successfully deleted
-		response := Response{Status: 69,
-			Message: []byte("OK"),
-		}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		message := []byte("OK")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 69
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 	}
 
@@ -254,10 +292,13 @@ func handleDelete(conn net.Conn, filename string) {
 // handleError sends an error message to the client.
 func handleError(conn net.Conn, msg string) {
 	cmderror := msg + "Invalid Request Method"
-	response := Response{Status: 68,
-		Message: []byte(cmderror),
-	}
-	buf := []byte{response.Status}
-	buf = append(buf, response.Message...)
+	message := []byte(cmderror)
+	responseSize := uint16(1 + len(message))
+
+	buf := make([]byte, 2+1+len(message))
+	binary.BigEndian.PutUint16(buf[0:2], responseSize)
+	buf[2] = 68
+	copy(buf[3:], message)
+
 	conn.Write(buf)
 }

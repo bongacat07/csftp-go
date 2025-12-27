@@ -57,35 +57,81 @@ func handleMethod(method string, args string, conn net.Conn) {
 }
 
 func reqDelete(args string, conn net.Conn) {
-	req := "DELETE " + args
-	_, err := conn.Write([]byte(req))
+	filenameBytes := []byte(args)
+	filenameLen := uint16(len(filenameBytes))
+
+	// Allocate exact size
+	reqBuf := make([]byte, 2+1+len(filenameBytes))
+	offset := 0
+
+	// filename length (2 bytes)
+	binary.BigEndian.PutUint16(reqBuf[offset:], filenameLen)
+	offset += 2
+
+	// opcode
+	reqBuf[offset] = byte(3) // DELETE opcode
+	offset++
+
+	// filename bytes
+	copy(reqBuf[offset:], filenameBytes)
+
+	_, error := conn.Write(reqBuf)
+	if error != nil {
+		panic(error)
+	}
+
+	// Read the server response with framing
+	sizeBuf := make([]byte, 2)
+	_, err := io.ReadFull(conn, sizeBuf)
+	if err != nil {
+		panic(err)
+	}
+	responseSize := binary.BigEndian.Uint16(sizeBuf)
+
+	statusBuf := make([]byte, 1)
+	_, err = io.ReadFull(conn, statusBuf)
 	if err != nil {
 		panic(err)
 	}
 
-	// Read the server response
-	buf := make([]byte, 1024) // buffer size can be adjusted
-	n, err := conn.Read(buf)
+	messageBuf := make([]byte, responseSize-1)
+	_, err = io.ReadFull(conn, messageBuf)
 	if err != nil {
 		panic(err)
 	}
 
-	// Convert received bytes into Response struct
 	resp := Response{
-		Status:  buf[0],
-		Message: buf[1:n],
+		Status:  statusBuf[0],
+		Message: messageBuf,
 	}
 
 	fmt.Printf("Server response: %d - %s\n", resp.Status, string(resp.Message))
 }
 
 func reqGet(args string, conn net.Conn) {
-	req := "GET " + args
-	_, err := conn.Write([]byte(req))
-	if err != nil {
-		panic(err)
-	}
 
+	filenameBytes := []byte(args)
+	filenameLen := uint16(len(filenameBytes))
+
+	// Allocate exact size
+	reqBuf := make([]byte, 2+1+len(filenameBytes))
+	offset := 0
+
+	// filename length (2 bytes)
+	binary.BigEndian.PutUint16(reqBuf[offset:], filenameLen)
+	offset += 2
+
+	// opcode
+	reqBuf[offset] = byte(1) // GET opcode
+	offset++
+
+	// filename bytes
+	copy(reqBuf[offset:], filenameBytes)
+
+	_, error := conn.Write(reqBuf)
+	if error != nil {
+		panic(error)
+	}
 	file, err := os.Create(args)
 	if err != nil {
 		// Unable to create file
@@ -105,26 +151,57 @@ func reqGet(args string, conn net.Conn) {
 	n := binary.BigEndian.Uint64(buf)
 	bytesWritten, err := io.CopyN(file, conn, int64(n))
 	log.Printf("Received file '%s' (%d bytes)", args, bytesWritten)
-	buff := make([]byte, 1024) // buffer size can be adjusted
-	resp, err := conn.Read(buff)
+
+	// Read the server response with framing
+	sizeBuf := make([]byte, 2)
+	_, err = io.ReadFull(conn, sizeBuf)
+	if err != nil {
+		panic(err)
+	}
+	responseSize := binary.BigEndian.Uint16(sizeBuf)
+
+	statusBuf := make([]byte, 1)
+	_, err = io.ReadFull(conn, statusBuf)
 	if err != nil {
 		panic(err)
 	}
 
-	// Convert received bytes into Response struct
+	messageBuf := make([]byte, responseSize-1)
+	_, err = io.ReadFull(conn, messageBuf)
+	if err != nil {
+		panic(err)
+	}
+
 	response := Response{
-		Status:  buff[0],
-		Message: buff[1:resp],
+		Status:  statusBuf[0],
+		Message: messageBuf,
 	}
 	fmt.Printf("Server response: %d - %s\n", response.Status, string(response.Message))
 }
 
 func reqPut(args string, conn net.Conn) {
 
-	req := "PUT " + args
-	_, err := conn.Write([]byte(req))
-	if err != nil {
-		panic(err)
+	filenameBytes := []byte(args)
+	filenameLen := uint16(len(filenameBytes))
+
+	// Allocate exact size
+	reqBuf := make([]byte, 2+1+len(filenameBytes))
+	offset := 0
+
+	// filename length (2 bytes)
+	binary.BigEndian.PutUint16(reqBuf[offset:], filenameLen)
+	offset += 2
+
+	// opcode
+	reqBuf[offset] = byte(2) // PUT opcode
+	offset++
+
+	// filename bytes
+	copy(reqBuf[offset:], filenameBytes)
+
+	_, error := conn.Write(reqBuf)
+	if error != nil {
+		panic(error)
 	}
 	file, err := os.Open(args)
 	if err != nil { // File not found
@@ -151,16 +228,30 @@ func reqPut(args string, conn net.Conn) {
 	} else { // Successfully sent
 		//
 	}
-	buff := make([]byte, 1024) // buffer size can be adjusted
-	n, err := conn.Read(buff)
+
+	// Read the server response with framing
+	sizeBuf := make([]byte, 2)
+	_, err = io.ReadFull(conn, sizeBuf)
+	if err != nil {
+		panic(err)
+	}
+	responseSize := binary.BigEndian.Uint16(sizeBuf)
+
+	statusBuf := make([]byte, 1)
+	_, err = io.ReadFull(conn, statusBuf)
 	if err != nil {
 		panic(err)
 	}
 
-	// Convert received bytes into Response struct
+	messageBuf := make([]byte, responseSize-1)
+	_, err = io.ReadFull(conn, messageBuf)
+	if err != nil {
+		panic(err)
+	}
+
 	resp := Response{
-		Status:  buff[0],
-		Message: buff[1:n],
+		Status:  statusBuf[0],
+		Message: messageBuf,
 	}
 
 	fmt.Printf("Server response: %d - %s\n", resp.Status, string(resp.Message))
