@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -62,41 +62,57 @@ func StartServer() {
 // It reads a request line, parses it into method + argument, and
 // dispatches to the correct handler for the file operation.
 func handleConnection(conn net.Conn) {
-	defer conn.Close() // Keep this, but close AFTER the loop
+	defer conn.Close()
 
-	// Keep reading requests on same connection
 	for {
+		// 60 second timeout between requests
 		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		buf := make([]byte, 2048)
-		n, err := conn.Read(buf)
+
+		req, arg, err := parser(conn)
 		if err != nil {
-			// Connection closed or error - exit loop
 			if err != io.EOF {
-				log.Println("read error:", err)
+				log.Println("parse error:", err)
 			}
 			return
 		}
 
-		request := string(buf[:n])
-		fmt.Println("Client requested:", request)
-
-		req, arg := parser(request)
 		handleRequest(req, arg, conn)
-
-		// TODO: Check if client sent close signal
-		// if req.wantsClose { break }
 	}
 }
 
-// parser splits the client request into a command and an argument.
-// Example input: "PUT hello.txt"
-// Returns: ("PUT", "hello.txt")
-func parser(request string) (string, string) {
-	parts := strings.Fields(request)
-	if len(parts) < 2 {
-		return "ERROR", ""
+func parser(r io.Reader) (string, string, error) {
+	// Read length
+	lenBuf := make([]byte, 2)
+	if _, err := io.ReadFull(r, lenBuf); err != nil {
+		return "", "", err
 	}
-	return parts[0], parts[1]
+	filenameLength := binary.BigEndian.Uint16(lenBuf)
+
+	// Read opcode
+	opBuf := make([]byte, 1)
+	if _, err := io.ReadFull(r, opBuf); err != nil {
+		return "", "", err
+	}
+
+	var reqMethod string
+	switch opBuf[0] {
+	case 0x01:
+		reqMethod = "GET"
+	case 0x02:
+		reqMethod = "PUT"
+	case 0x03:
+		reqMethod = "DELETE"
+	default:
+		return "", "", fmt.Errorf("invalid opcode: %d", opBuf[0])
+	}
+
+	// Read filename
+	nameBuf := make([]byte, filenameLength)
+	if _, err := io.ReadFull(r, nameBuf); err != nil {
+		return "", "", err
+	}
+
+	return reqMethod, string(nameBuf), nil
 }
 
 // handleRequest routes the parsed request to the correct handler.
@@ -123,41 +139,60 @@ func handlePut(conn net.Conn, filename string) {
 	file, err := os.Create(filename)
 	if err != nil {
 		// Unable to create file
-		response := Response{Status: 62,
-			Message: []byte("Unable to create file"),
-		}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		message := []byte("Unable to create file")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 62
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 		return
-
 	}
 	defer file.Close()
+
 	buf := make([]byte, 8)
 	_, errr := io.ReadFull(conn, buf)
 	if errr != nil {
-		response := Response{Status: 63,
-			Message: []byte("Buffer error"),
-		}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		message := []byte("Buffer error")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 63
+		copy(buf[3:], message)
+
 		conn.Write(buf)
+		return
 	}
+
 	n := binary.BigEndian.Uint64(buf)
 	// Copy all incoming bytes from the connection into the file.
 	// io.Copy reads until the client closes the connection.
 	bytesWritten, err := io.CopyN(file, conn, int64(n))
 	if err != nil {
 		//error during file transfer
-		response := Response{Status: 64, Message: []byte("PUT error")}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		message := []byte("PUT error")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 64
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 		return
-	} else { // Successfully sent
-		response := Response{Status: 69, Message: []byte("OK")}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+	} else {
+		// Successfully sent
+		message := []byte("OK")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 69
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 	}
 
@@ -171,30 +206,45 @@ func handlePut(conn net.Conn, filename string) {
 //	Server sends raw file bytes.
 func handleGet(conn net.Conn, filename string) {
 	curState := stateSendL1
-
+	cpuLoad, _ := cpu.Percent(time.Second, false)
+	baselineCPU := cpuLoad[0]
+	fileData, _ := os.ReadFile(filename)
+	fileSize := len(fileData)
+	fileType := filepath.Ext(filename)
+	// Memory
+	vm, _ := mem.VirtualMemory()
+	baselineMem := vm.Available / (1024 * 1024)
+	fmt.Println("=== Pre-Compression Metrics ===")
+	fmt.Printf("File_Size_Bytes: %d\n", fileSize)
+	fmt.Printf("File_Type: %s\n", fileType)
+	fmt.Printf("CPU_Percent: %.2f\n", baselineCPU)
+	fmt.Printf("Available_Mem_MB: %d\n", baselineMem)
 name:
 	for {
 		switch curState {
 		case stateSendL1:
-			headerSize1, compressedData1 := compressor(1, filename)
+			headerSize1, compressedData1 := compressor(1, fileData)
 			writeToConn(headerSize1, conn, compressedData1)
+
 			curState = stateWaitACK1
 		case stateSendL2:
-			headerSize2, compressedData2 := compressor(3, filename)
+			headerSize2, compressedData2 := compressor(3, fileData)
 			writeToConn(headerSize2, conn, compressedData2)
 			curState = stateWaitACK2
 		case stateSendL3:
-			headerSize3, compressedData3 := compressor(9, filename)
+			headerSize3, compressedData3 := compressor(9, fileData)
 			writeToConn(headerSize3, conn, compressedData3)
 			curState = stateWaitACK3
 
 		case stateWaitACK1:
 			if readACK(conn) {
+				waitForSystemSettle(baselineCPU, baselineMem)
 				curState = stateSendL2
 			}
 
 		case stateWaitACK2:
 			if readACK(conn) {
+				waitForSystemSettle(baselineCPU, baselineMem)
 				curState = stateSendL3
 			}
 		case stateWaitACK3:
@@ -202,7 +252,7 @@ name:
 				curState = stateSendResponse
 			}
 		case stateSendResponse:
-			sendRespone(conn)
+			sendResponse(conn)
 			break name
 		}
 
@@ -219,20 +269,26 @@ func handleDelete(conn net.Conn, filename string) {
 	err := os.Remove(filename)
 	if err != nil {
 		// File not found or unable to delete
-		response := Response{Status: 65,
-			Message: []byte("file not found"),
-		}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		message := []byte("file not found")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 65
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 		return
 	} else {
 		// Successfully deleted
-		response := Response{Status: 69,
-			Message: []byte("OK"),
-		}
-		buf := []byte{response.Status}
-		buf = append(buf, response.Message...)
+		message := []byte("OK")
+		responseSize := uint16(1 + len(message))
+
+		buf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(buf[0:2], responseSize)
+		buf[2] = 69
+		copy(buf[3:], message)
+
 		conn.Write(buf)
 	}
 
@@ -242,43 +298,48 @@ func handleDelete(conn net.Conn, filename string) {
 // handleError sends an error message to the client.
 func handleError(conn net.Conn, msg string) {
 	cmderror := msg + "Invalid Request Method"
-	response := Response{Status: 68,
-		Message: []byte(cmderror),
-	}
-	buf := []byte{response.Status}
-	buf = append(buf, response.Message...)
+	message := []byte(cmderror)
+	responseSize := uint16(1 + len(message))
+
+	buf := make([]byte, 2+1+len(message))
+	binary.BigEndian.PutUint16(buf[0:2], responseSize)
+	buf[2] = 68
+	copy(buf[3:], message)
+
 	conn.Write(buf)
+	log.Println("Success")
 }
 
-func compressor(level int, filename string) ([]byte, []byte) {
-	fileData, err := os.ReadFile(filename)
-	fileSize := len(fileData)
-	fileType := filepath.Ext(filename)
+func readACK(conn net.Conn) bool {
+	buf := make([]byte, 2)
+	_, err := io.ReadFull(conn, buf)
+
+	if err != nil {
+		panic(err)
+	}
+
+	if buf[0] == 7 {
+		return true
+	} else {
+		return false
+	}
+}
+
+func compressor(level int, fileData []byte) ([]byte, []byte) {
 
 	// CPU (use 1 second sample for accuracy)
-	cpuLoad, _ := cpu.Percent(time.Second, false)
-	cpuPercent := cpuLoad[0]
-
-	// Memory
-	vm, _ := mem.VirtualMemory()
-	availableMemMB := vm.Available / (1024 * 1024)
-
-	fmt.Println("=== Pre-Compression Metrics ===")
-	fmt.Printf("File_Size_Bytes: %d\n", fileSize)
-	fmt.Printf("File_Type: %s\n", fileType)
-	fmt.Printf("CPU_Percent: %.2f\n", cpuPercent)
-	fmt.Printf("Available_Mem_MB: %d\n", availableMemMB)
 
 	var compressedBuffer bytes.Buffer
 	start := time.Now()
 	gzipWriter, _ := gzip.NewWriterLevel(&compressedBuffer, level)
-	_, err = gzipWriter.Write(fileData)
+	_, err := gzipWriter.Write(fileData)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := gzipWriter.Close(); err != nil {
+	if err := gzipWriter.Close(); err != nil { // ← ADD THIS BACK
 		log.Fatal(err)
 	}
+
 	compressionTime := time.Since(start)
 
 	compressedData := compressedBuffer.Bytes()
@@ -303,35 +364,55 @@ func writeToConn(buf []byte, conn net.Conn, compData []byte) {
 	}
 
 	if _, err := conn.Write(compData); err != nil {
-		response := Response{
-			Status:  70,
-			Message: []byte("Transfer error"),
-		}
+		message := []byte("Transfer error")
+		responseSize := uint16(1 + len(message))
 
-		respBuf := []byte{response.Status}
-		respBuf = append(respBuf, response.Message...)
+		respBuf := make([]byte, 2+1+len(message))
+		binary.BigEndian.PutUint16(respBuf[0:2], responseSize)
+		respBuf[2] = 70
+		copy(respBuf[3:], message)
+
 		conn.Write(respBuf)
 		return
 	}
 }
-func sendRespone(conn net.Conn) {
-	response := Response{Status: 69, Message: []byte("OK")}
-	buf := []byte{response.Status}
-	buf = append(buf, response.Message...)
+
+func sendResponse(conn net.Conn) {
+	message := []byte("OK")
+	responseSize := uint16(1 + len(message))
+
+	buf := make([]byte, 2+1+len(message))
+	binary.BigEndian.PutUint16(buf[0:2], responseSize)
+	buf[2] = 69
+	copy(buf[3:], message)
+
 	conn.Write(buf)
 	log.Println("Success")
 }
-func readACK(conn net.Conn) bool {
-	buf := make([]byte, 2)
-	_, err := io.ReadFull(conn, buf)
 
-	if err != nil {
-		panic(err)
-	}
+func waitForSystemSettle(baselineCPU float64, baselineMem uint64) {
+	fmt.Println("Waiting for system to settle...")
 
-	if buf[0] == 7 {
-		return true
-	} else {
-		return false
+	for {
+		time.Sleep(500 * time.Millisecond)
+
+		cpuLoad, _ := cpu.Percent(200*time.Millisecond, false)
+		currentCPU := cpuLoad[0]
+
+		vm, _ := mem.VirtualMemory()
+		currentMem := vm.Available / (1024 * 1024)
+
+		// Calculate percentage differences
+		cpuDiff := math.Abs(currentCPU - baselineCPU)
+		memDiffPercent := math.Abs(float64(currentMem)-float64(baselineMem)) / float64(baselineMem) * 100
+
+		// Both within 1%
+		if cpuDiff < 1.0 && memDiffPercent < 1.0 {
+			fmt.Println("System settled.")
+			return
+		}
+
+		fmt.Printf("Settling... CPU diff: %.2f%%, Mem diff: %.2f%%\n",
+			cpuDiff, memDiffPercent)
 	}
 }
