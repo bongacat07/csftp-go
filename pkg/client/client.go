@@ -127,7 +127,7 @@ func reqGet(args string, conn net.Conn) {
 	fmt.Println("=== Transfer Time Measurements ===")
 
 	// Receive 3 compressed versions and measure transfer time for each
-	for level := 1; level <= 3; level++ {
+	for level := 1; level <= 9; level++ {
 		// Read compressed size header (8 bytes)
 		sizeBuf := make([]byte, 8)
 		_, err := io.ReadFull(conn, sizeBuf)

@@ -13,6 +13,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
+	"github.com/pierrec/lz4"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/mem"
 )
@@ -31,6 +34,18 @@ const (
 	stateSendL3
 	stateWaitACK3
 	stateSendResponse
+	stateSendLzn4
+	stateWaitACK4
+	stateSendZstdFastest
+	stateWaitACK5
+	stateSendZstdDefault
+	stateWaitACK6
+	stateSendZstdBetter
+	stateWaitACK7
+	stateSendZstdBest
+	stateWaitACK8
+	statesendBrotli4
+	stateWait9
 )
 
 func StartServer() {
@@ -228,7 +243,7 @@ name:
 
 			curState = stateWaitACK1
 		case stateSendL2:
-			headerSize2, compressedData2 := compressor(3, fileData)
+			headerSize2, compressedData2 := compressor(6, fileData)
 			writeToConn(headerSize2, conn, compressedData2)
 			curState = stateWaitACK2
 		case stateSendL3:
@@ -249,6 +264,61 @@ name:
 			}
 		case stateWaitACK3:
 			if readACK(conn) {
+				waitForSystemSettle(baselineCPU, baselineMem)
+				curState = stateSendLzn4
+			}
+		case stateSendLzn4:
+			headerSize4, compressedData4 := lz4compressor(fileData)
+			writeToConn(headerSize4, conn, compressedData4)
+			curState = stateWaitACK4
+		case stateWaitACK4:
+			if readACK(conn) {
+				waitForSystemSettle(baselineCPU, baselineMem)
+				curState = stateSendZstdDefault
+			}
+		case stateSendZstdFastest:
+			headerSize5, compressedData5 := zstdFastCompressor(fileData)
+			writeToConn(headerSize5, conn, compressedData5)
+			curState = stateWaitACK5
+		case stateWaitACK5:
+			if readACK(conn) {
+				waitForSystemSettle(baselineCPU, baselineMem)
+				curState = stateSendZstdBetter
+			}
+		case stateSendZstdDefault:
+			headerSize6, compressedData6 := zstdDefaultCompressor(fileData)
+			writeToConn(headerSize6, conn, compressedData6)
+			curState = stateWaitACK6
+		case stateWaitACK6:
+			if readACK(conn) {
+				waitForSystemSettle(baselineCPU, baselineMem)
+				curState = stateSendZstdFastest
+			}
+		case stateSendZstdBetter:
+			headerSize7, compressedData7 := zstdBetter(fileData)
+			writeToConn(headerSize7, conn, compressedData7)
+			curState = stateWaitACK7
+		case stateWaitACK7:
+			if readACK(conn) {
+				waitForSystemSettle(baselineCPU, baselineMem)
+				curState = stateSendZstdBest
+			}
+		case stateSendZstdBest:
+			headerSize8, compressedData8 := zstdBest(fileData)
+			writeToConn(headerSize8, conn, compressedData8)
+			curState = stateWaitACK8
+		case stateWaitACK8:
+			if readACK(conn) {
+				waitForSystemSettle(baselineCPU, baselineMem)
+				curState = statesendBrotli4
+			}
+		case statesendBrotli4:
+			headerSize9, compressedData9 := brotliCompressor(fileData)
+			writeToConn(headerSize9, conn, compressedData9)
+			curState = stateWait9
+		case stateWait9:
+			if readACK(conn) {
+				waitForSystemSettle(baselineCPU, baselineMem)
 				curState = stateSendResponse
 			}
 		case stateSendResponse:
@@ -415,4 +485,172 @@ func waitForSystemSettle(baselineCPU float64, baselineMem uint64) {
 		fmt.Printf("Settling... CPU diff: %.2f%%, Mem diff: %.2f%%\n",
 			cpuDiff, memDiffPercent)
 	}
+}
+func lz4compressor(fileData []byte) ([]byte, []byte) {
+	var compressedBuffer bytes.Buffer
+
+	start := time.Now()
+	writer := lz4.NewWriter(&compressedBuffer)
+
+	_, err := writer.Write(fileData)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := writer.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	compressionTime := time.Since(start)
+	compressedData := compressedBuffer.Bytes()
+	compressedSize := len(compressedData)
+
+	fmt.Printf("Compression_Time: %v\n", compressionTime)
+	fmt.Printf("Compressed_Size: %d\n", compressedSize)
+	headerSize := makeHeader(compressedSize)
+
+	return headerSize, compressedData
+
+}
+func zstdFastCompressor(fileData []byte) ([]byte, []byte) {
+	var compressedBuffer bytes.Buffer
+
+	start := time.Now()
+	encoder, err := zstd.NewWriter(&compressedBuffer, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = encoder.Write(fileData)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := encoder.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	compressionTime := time.Since(start)
+	compressedData := compressedBuffer.Bytes()
+	compressedSize := len(compressedData)
+
+	fmt.Printf("Compression_Time: %v\n", compressionTime)
+	fmt.Printf("Compressed_Size: %d\n", compressedSize)
+	headerSize := makeHeader(compressedSize)
+
+	return headerSize, compressedData
+
+}
+func zstdDefaultCompressor(fileData []byte) ([]byte, []byte) {
+	var compressedBuffer bytes.Buffer
+
+	start := time.Now()
+	encoder, err := zstd.NewWriter(&compressedBuffer, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = encoder.Write(fileData)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := encoder.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	compressionTime := time.Since(start)
+	compressedData := compressedBuffer.Bytes()
+	compressedSize := len(compressedData)
+
+	fmt.Printf("Compression_Time: %v\n", compressionTime)
+	fmt.Printf("Compressed_Size: %d\n", compressedSize)
+	headerSize := makeHeader(compressedSize)
+
+	return headerSize, compressedData
+
+}
+func zstdBetter(fileData []byte) ([]byte, []byte) {
+	var compressedBuffer bytes.Buffer
+
+	start := time.Now()
+	encoder, err := zstd.NewWriter(&compressedBuffer, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = encoder.Write(fileData)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := encoder.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	compressionTime := time.Since(start)
+	compressedData := compressedBuffer.Bytes()
+	compressedSize := len(compressedData)
+
+	fmt.Printf("Compression_Time: %v\n", compressionTime)
+	fmt.Printf("Compressed_Size: %d\n", compressedSize)
+	headerSize := makeHeader(compressedSize)
+
+	return headerSize, compressedData
+
+}
+func zstdBest(fileData []byte) ([]byte, []byte) {
+	var compressedBuffer bytes.Buffer
+
+	start := time.Now()
+	encoder, err := zstd.NewWriter(&compressedBuffer, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = encoder.Write(fileData)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := encoder.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	compressionTime := time.Since(start)
+	compressedData := compressedBuffer.Bytes()
+	compressedSize := len(compressedData)
+
+	fmt.Printf("Compression_Time: %v\n", compressionTime)
+	fmt.Printf("Compressed_Size: %d\n", compressedSize)
+	headerSize := makeHeader(compressedSize)
+
+	return headerSize, compressedData
+
+}
+func brotliCompressor(fileData []byte) ([]byte, []byte) {
+	var compressedBuffer bytes.Buffer
+
+	start := time.Now()
+	writer := brotli.NewWriterLevel(&compressedBuffer, brotli.DefaultCompression)
+
+	_, err := writer.Write(fileData)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := writer.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	compressionTime := time.Since(start)
+	compressedData := compressedBuffer.Bytes()
+	compressedSize := len(compressedData)
+
+	fmt.Printf("Compression_Time: %v\n", compressionTime)
+	fmt.Printf("Compressed_Size: %d\n", compressedSize)
+	headerSize := makeHeader(compressedSize)
+
+	return headerSize, compressedData
+
 }
