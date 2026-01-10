@@ -10,14 +10,12 @@ import (
 	"math"
 	"net"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 	"github.com/pierrec/lz4"
 	"github.com/shirou/gopsutil/v4/cpu"
-	"github.com/shirou/gopsutil/v4/mem"
 )
 
 type Response struct {
@@ -46,6 +44,8 @@ const (
 	stateWaitACK8
 	statesendBrotli4
 	stateWait9
+	stateSendUncompressed
+	stateWaitAck10
 )
 
 func StartServer() {
@@ -221,23 +221,25 @@ func handlePut(conn net.Conn, filename string) {
 //	Server sends raw file bytes.
 func handleGet(conn net.Conn, filename string) {
 	curState := stateSendL1
-	cpuLoad, _ := cpu.Percent(time.Second, false)
-	baselineCPU := cpuLoad[0]
+
 	fileData, _ := os.ReadFile(filename)
 	fileSize := len(fileData)
-	fileType := filepath.Ext(filename)
+	cpuLoad, _ := cpu.Percent(time.Second, false)
+	baselineCPU := cpuLoad[0]
+
+	fileentropy := (entropy(fileData))
 	// Memory
-	vm, _ := mem.VirtualMemory()
-	baselineMem := vm.Available / (1024 * 1024)
+	waitForSystemSettle(baselineCPU)
 	fmt.Println("=== Pre-Compression Metrics ===")
 	fmt.Printf("File_Size_Bytes: %d\n", fileSize)
-	fmt.Printf("File_Type: %s\n", fileType)
+	fmt.Printf("File_Enrtopy: %.5f\n", fileentropy)
 	fmt.Printf("CPU_Percent: %.2f\n", baselineCPU)
-	fmt.Printf("Available_Mem_MB: %d\n", baselineMem)
+
 name:
 	for {
 		switch curState {
 		case stateSendL1:
+			waitForSystemSettle(baselineCPU)
 			headerSize1, compressedData1 := compressor(1, fileData)
 			writeToConn(headerSize1, conn, compressedData1)
 
@@ -253,18 +255,18 @@ name:
 
 		case stateWaitACK1:
 			if readACK(conn) {
-				waitForSystemSettle(baselineCPU, baselineMem)
+				waitForSystemSettle(baselineCPU)
 				curState = stateSendL2
 			}
 
 		case stateWaitACK2:
 			if readACK(conn) {
-				waitForSystemSettle(baselineCPU, baselineMem)
+				waitForSystemSettle(baselineCPU)
 				curState = stateSendL3
 			}
 		case stateWaitACK3:
 			if readACK(conn) {
-				waitForSystemSettle(baselineCPU, baselineMem)
+				waitForSystemSettle(baselineCPU)
 				curState = stateSendLzn4
 			}
 		case stateSendLzn4:
@@ -273,7 +275,7 @@ name:
 			curState = stateWaitACK4
 		case stateWaitACK4:
 			if readACK(conn) {
-				waitForSystemSettle(baselineCPU, baselineMem)
+				waitForSystemSettle(baselineCPU)
 				curState = stateSendZstdDefault
 			}
 		case stateSendZstdFastest:
@@ -282,7 +284,7 @@ name:
 			curState = stateWaitACK5
 		case stateWaitACK5:
 			if readACK(conn) {
-				waitForSystemSettle(baselineCPU, baselineMem)
+				waitForSystemSettle(baselineCPU)
 				curState = stateSendZstdBetter
 			}
 		case stateSendZstdDefault:
@@ -291,7 +293,7 @@ name:
 			curState = stateWaitACK6
 		case stateWaitACK6:
 			if readACK(conn) {
-				waitForSystemSettle(baselineCPU, baselineMem)
+				waitForSystemSettle(baselineCPU)
 				curState = stateSendZstdFastest
 			}
 		case stateSendZstdBetter:
@@ -300,7 +302,7 @@ name:
 			curState = stateWaitACK7
 		case stateWaitACK7:
 			if readACK(conn) {
-				waitForSystemSettle(baselineCPU, baselineMem)
+				waitForSystemSettle(baselineCPU)
 				curState = stateSendZstdBest
 			}
 		case stateSendZstdBest:
@@ -309,7 +311,7 @@ name:
 			curState = stateWaitACK8
 		case stateWaitACK8:
 			if readACK(conn) {
-				waitForSystemSettle(baselineCPU, baselineMem)
+				waitForSystemSettle(baselineCPU)
 				curState = statesendBrotli4
 			}
 		case statesendBrotli4:
@@ -318,7 +320,16 @@ name:
 			curState = stateWait9
 		case stateWait9:
 			if readACK(conn) {
-				waitForSystemSettle(baselineCPU, baselineMem)
+				waitForSystemSettle(baselineCPU)
+				curState = stateSendUncompressed
+			}
+		case stateSendUncompressed:
+			headerSize10 := makeHeader(fileSize)
+			writeToConn(headerSize10, conn, fileData)
+			curState = stateWaitAck10
+		case stateWaitAck10:
+			if readACK(conn) {
+				waitForSystemSettle(baselineCPU)
 				curState = stateSendResponse
 			}
 		case stateSendResponse:
@@ -460,7 +471,7 @@ func sendResponse(conn net.Conn) {
 	log.Println("Success")
 }
 
-func waitForSystemSettle(baselineCPU float64, baselineMem uint64) {
+func waitForSystemSettle(baselineCPU float64) {
 	fmt.Println("Waiting for system to settle...")
 
 	for {
@@ -469,21 +480,17 @@ func waitForSystemSettle(baselineCPU float64, baselineMem uint64) {
 		cpuLoad, _ := cpu.Percent(200*time.Millisecond, false)
 		currentCPU := cpuLoad[0]
 
-		vm, _ := mem.VirtualMemory()
-		currentMem := vm.Available / (1024 * 1024)
-
 		// Calculate percentage differences
 		cpuDiff := math.Abs(currentCPU - baselineCPU)
-		memDiffPercent := math.Abs(float64(currentMem)-float64(baselineMem)) / float64(baselineMem) * 100
 
 		// Both within 1%
-		if cpuDiff < 1.0 && memDiffPercent < 1.0 {
+		if cpuDiff < 1.0 {
 			fmt.Println("System settled.")
 			return
 		}
 
-		fmt.Printf("Settling... CPU diff: %.2f%%, Mem diff: %.2f%%\n",
-			cpuDiff, memDiffPercent)
+		fmt.Printf("Settling... CPU diff: %.2f%%",
+			cpuDiff)
 	}
 }
 func lz4compressor(fileData []byte) ([]byte, []byte) {
@@ -653,4 +660,27 @@ func brotliCompressor(fileData []byte) ([]byte, []byte) {
 
 	return headerSize, compressedData
 
+}
+func entropy(data []byte) float64 {
+	if len(data) == 0 {
+		return 0.0
+	}
+
+	var freq [256]int
+	for _, b := range data {
+		freq[b]++
+	}
+
+	dataLen := float64(len(data))
+	var ent float64
+
+	for _, count := range freq {
+		if count == 0 {
+			continue
+		}
+		p := float64(count) / dataLen
+		ent -= p * math.Log2(p)
+	}
+
+	return ent
 }
