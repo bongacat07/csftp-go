@@ -23,10 +23,17 @@ var header = []string{
 	"File_Size_Bytes",
 	"File_Enrtopy",
 	"CPU_Percent",
-	"Compression_Time",
-	"Compressed_Size",
 	"Algorithm",
+	"Compressed_Size",
+	"Compression_Time",
+	"Bandwith",
+	"Latency",
+	"Packet_Loss",
 }
+
+const Packet_Loss string = "0%"
+const Bandwith string = "1000 MBps"
+const Latency string = "10ms"
 
 type state int
 
@@ -87,7 +94,6 @@ func handleConnection(conn net.Conn) {
 
 	for {
 		// 60 second timeout between requests
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 		req, arg, err := parser(conn)
 		if err != nil {
@@ -227,7 +233,7 @@ func handlePut(conn net.Conn, filename string) {
 //	Server sends raw file bytes.
 func handleGet(conn net.Conn, filename string) {
 
-	initCSV("server", header)
+	initCSV("server-data", header)
 	curState := stateSendL1
 
 	fileData, _ := os.ReadFile(filename)
@@ -252,6 +258,7 @@ name:
 			fmt.Printf("Algorithm: %s\n", algoName)
 			fmt.Printf("Compression_Time: %v\n", time)
 			writeToConn(headerSize1, conn, compressedData1)
+			writeCSVRow("server-data", fileSize, fileentropy, baselineCPU, algoName, len(compressedData1), time)
 
 			curState = stateWaitACK1
 		case stateSendL2:
@@ -259,12 +266,14 @@ name:
 			fmt.Printf("Algorithm: %s\n", algoName)
 			fmt.Printf("Compression_Time: %v\n", time)
 			writeToConn(headerSize2, conn, compressedData2)
+			writeCSVRow("server-data", fileSize, fileentropy, baselineCPU, algoName, len(compressedData2), time)
 			curState = stateWaitACK2
 		case stateSendL3:
 			headerSize3, compressedData3, algoName, time := compressor(9, fileData)
 			fmt.Printf("Algorithm: %s\n", algoName)
 			fmt.Printf("Compression_Time: %v\n", time)
 			writeToConn(headerSize3, conn, compressedData3)
+			writeCSVRow("server-data", fileSize, fileentropy, baselineCPU, algoName, len(compressedData3), time)
 			curState = stateWaitACK3
 
 		case stateWaitACK1:
@@ -288,6 +297,7 @@ name:
 			fmt.Printf("Algorithm: %s\n", algoName)
 			fmt.Printf("Compression_Time: %v\n", time)
 			writeToConn(headerSize4, conn, compressedData4)
+			writeCSVRow("server-data", fileSize, fileentropy, baselineCPU, algoName, len(compressedData4), time)
 			curState = stateWaitACK4
 		case stateWaitACK4:
 			if readACK(conn) {
@@ -299,6 +309,7 @@ name:
 			fmt.Printf("Algorithm: %s\n", algoName)
 			fmt.Printf("Compression_Time: %v\n", time)
 			writeToConn(headerSize5, conn, compressedData5)
+			writeCSVRow("server-data", fileSize, fileentropy, baselineCPU, algoName, len(compressedData5), time)
 			curState = stateWaitACK5
 		case stateWaitACK5:
 			if readACK(conn) {
@@ -310,6 +321,7 @@ name:
 			fmt.Printf("Algorithm: %s\n", algoName)
 			fmt.Printf("Compression_Time: %v\n", time)
 			writeToConn(headerSize6, conn, compressedData6)
+			writeCSVRow("server-data", fileSize, fileentropy, baselineCPU, algoName, len(compressedData6), time)
 			curState = stateWaitACK6
 		case stateWaitACK6:
 			if readACK(conn) {
@@ -321,6 +333,7 @@ name:
 			fmt.Printf("Algorithm: %s\n", algoName)
 			fmt.Printf("Compression_Time: %v\n", time)
 			writeToConn(headerSize7, conn, compressedData7)
+			writeCSVRow("server-data", fileSize, fileentropy, baselineCPU, algoName, len(compressedData7), time)
 			curState = stateWaitACK7
 		case stateWaitACK7:
 			if readACK(conn) {
@@ -332,6 +345,7 @@ name:
 			fmt.Printf("Algorithm: %s\n", algoName)
 			fmt.Printf("Compression_Time: %v\n", time)
 			writeToConn(headerSize8, conn, compressedData8)
+			writeCSVRow("server-data", fileSize, fileentropy, baselineCPU, algoName, len(compressedData8), time)
 			curState = stateWaitACK8
 		case stateWaitACK8:
 			if readACK(conn) {
@@ -343,6 +357,7 @@ name:
 			fmt.Printf("Algorithm: %s\n", algoName)
 			fmt.Printf("Compression_Time: %v\n", time)
 			writeToConn(headerSize9, conn, compressedData9)
+			writeCSVRow("server-data", fileSize, fileentropy, baselineCPU, algoName, len(compressedData9), time)
 			curState = stateWait9
 		case stateWait9:
 			if readACK(conn) {
@@ -353,6 +368,7 @@ name:
 			headerSize10 := makeHeader(fileSize)
 			writeToConn(headerSize10, conn, fileData)
 			curState = stateWaitAck10
+			writeCSVRow("server-data", fileSize, fileentropy, baselineCPU, "None", fileSize, 0)
 		case stateWaitAck10:
 			if readACK(conn) {
 				waitForSystemSettle(baselineCPU)
@@ -740,4 +756,30 @@ func initCSV(filename string, header []string) error {
 	defer writer.Flush()
 
 	return writer.Write(header)
+}
+
+// Add this function after initCSV()
+func writeCSVRow(filename string, fileSize int, fileEntropy float64, cpuPercent float64, algorithm string, compressedSize int, compressionTime time.Duration) error {
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	row := []string{
+		fmt.Sprintf("%d", fileSize),
+		fmt.Sprintf("%.5f", fileEntropy),
+		fmt.Sprintf("%.2f", cpuPercent),
+		algorithm,
+		fmt.Sprintf("%d", compressedSize),
+		compressionTime.String(),
+		Bandwith,
+		Latency,
+		Packet_Loss,
+	}
+
+	return writer.Write(row)
 }

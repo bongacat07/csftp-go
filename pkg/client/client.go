@@ -3,6 +3,7 @@ package client
 import (
 	"bufio"
 	"encoding/binary"
+	"encoding/csv"
 	"fmt"
 	"io"
 	"log"
@@ -17,6 +18,11 @@ type Response struct {
 	Message []byte
 }
 
+var clientCSVHeader = []string{
+	"Transfer_Time",
+}
+
+// StartClient initializes and starts the client
 func StartClient() {
 	//Start a client on any random port
 
@@ -125,6 +131,7 @@ func reqGet(args string, conn net.Conn) {
 	}
 
 	fmt.Println("=== Transfer Time Measurements ===")
+	initCSV("client-data", clientCSVHeader)
 
 	// Receive 3 compressed versions and measure transfer time for each
 	for level := 1; level <= 10; level++ {
@@ -154,6 +161,7 @@ func reqGet(args string, conn net.Conn) {
 		// Print metrics
 		fmt.Printf("Level_%d_Compressed_Size: %d bytes\n", level, compressedSize)
 		fmt.Printf("Level_%d_Transfer_Time: %v\n", level, transferTime)
+		writeCSVRow("client-data", transferTime)
 
 		// Clear buffer to free memory
 		buffer = nil
@@ -270,4 +278,39 @@ func reqPut(args string, conn net.Conn) {
 
 	fmt.Printf("Server response: %d - %s\n", resp.Status, string(resp.Message))
 	log.Printf("Sent file '%s' (%d bytes)", args, bytesSent)
+}
+func initCSV(filename string, header []string) error {
+	// Check if file exists
+	if _, err := os.Stat(filename); err == nil {
+		return nil // already exists → do nothing
+	}
+
+	// Create file + write header
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	return writer.Write(header)
+}
+func writeCSVRow(filename string, transferTime time.Duration) error {
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	row := []string{
+
+		transferTime.String(),
+	}
+
+	return writer.Write(row)
 }
