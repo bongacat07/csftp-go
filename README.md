@@ -1,7 +1,7 @@
 # This repository is no more active
 
 ## As I got more deeper into network programming, I realised Go was abstracting a lot of stuff that I felt I need to know if I really want to get to know things. So I have decided to abandon Go lang and switched to C.
-## Does this mean Go lang is terrible for systems programming? No, not at all. Infact it was writing a shitty protocol in Go lang that thgought me networking is nothging but parsers and handler functions. So to anyone new starting out, you gotta start from Go, makes you life easier. But you also gotta switch to C someday
+## Does this mean Go lang is terrible for systems programming? No, not at all. Infact it was writing a shitty protocol in Go lang that thgought me networking is nothing but parsers and handler functions. So to anyone new starting out, you gotta start from Go, makes you life easier. But you also gotta switch to C someday
 
 # File Transfer Protocol (Sort Of)
 
@@ -103,4 +103,5 @@ Do whatever you want with this. It's already insecure, what's the worst that cou
 *Built to learn. Broken by design.*
 
 *For now.*
+
 
